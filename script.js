@@ -1,9 +1,8 @@
-// import { S3Client, PutObjectAclCommand } from "@aws-sdk/client-s3";
 import dotenv from "dotenv";
 dotenv.config();
-import pkg from "@aws-sdk/client-s3";
+import { STSClient, AssumeRoleCommand } from "@aws-sdk/client-sts";
+import { S3Client, PutObjectAclCommand } from "@aws-sdk/client-s3";
 import Knex from "knex";
-const { S3Client, PutObjectAclCommand } = pkg;
 
 const db = new Knex({
   client: "mysql",
@@ -20,30 +19,40 @@ const db = new Knex({
   },
 });
 
-const s3 = new S3Client({
-  region: process.env.AWS_REGION,
-});
+const sts = new STSClient();
 
-const run = async (user_id, folder_id) => {
+const user_id = process.argv[2];
+const folder_id = process.argv[3];
+const mfaCode = process.argv[4];
+
+const run = async () => {
   const assets = await db("user_design_assets").where({
     user_id,
     folder_id,
     status: 9,
   });
 
-  // send a single request to test
-
-  // const res = await s3.send(
-  //   new PutObjectAclCommand({
-  //     Bucket: process.env.AWS_BUCKET_ASSET_FILES,
-  //     Key: "ezHjM9tiQ8K0e8mBQZwyEQ/146172/bruh.jpg",
-  //     ACL: "public-read",
-  //   })
-  // );
-
-  // console.log(res);
-
   try {
+    const { Credentials } = await sts.send(
+      new AssumeRoleCommand({
+        TokenCode: mfaCode,
+        SerialNumber: process.env.AWS_MFA_DEVICE_ARN,
+        RoleArn: process.env.AWS_PROD_ROLE_ARN,
+        DurationSeconds: process.env.AWS_ROLE_DURATION,
+        RoleSessionName: "S3-Access",
+      })
+    );
+
+    const s3 = new S3Client({
+      region: process.env.AWS_REGION,
+      credentials: {
+        accessKeyId: Credentials.AccessKeyId,
+        secretAccessKey: Credentials.SecretAccessKey,
+        sessionToken: Credentials.SessionToken,
+        expiration: Credentials.Expiration,
+      },
+    });
+
     const promises = assets.map(async (asset) =>
       s3.send(
         new PutObjectAclCommand({
@@ -75,4 +84,4 @@ const run = async (user_id, folder_id) => {
   await db.destroy();
 };
 
-run(146172, 420522);
+run();
